@@ -246,24 +246,50 @@ class OpenAIGenerator:
     def __init__(self, max_output_tokens: int = 300) -> None:
         api_key = os.getenv("OPENAI_API_KEY", "").strip()
         self.model = os.getenv("OPENAI_MODEL", "").strip()
+        base_url = os.getenv("OPENAI_BASE_URL", "").strip() or None
         if not api_key:
             raise RuntimeError("OPENAI_API_KEY is missing from .env")
         if not self.model:
             raise RuntimeError("OPENAI_MODEL is missing from .env")
-        self.client = OpenAI(api_key=api_key)
+        self.client = OpenAI(api_key=api_key, base_url=base_url)
         self.max_output_tokens = max_output_tokens
 
     def generate(self, prompt: str) -> str:
-        response = self.client.responses.create(
-            model=self.model,
-            input=prompt,
-            temperature=0,
-            max_output_tokens=self.max_output_tokens,
-        )
-        answer = response.output_text.strip()
-        if not answer:
-            raise RuntimeError("OpenAI returned an empty answer")
-        return answer
+        last_err = None
+        for attempt in range(5):
+            try:
+                # Use standard chat completions which is fully compatible with OpenAI, Gemini, Groq, etc.
+                response = self.client.chat.completions.create(
+                    model=self.model,
+                    messages=[{"role": "user", "content": prompt}],
+                    temperature=0,
+                    max_tokens=self.max_output_tokens,
+                )
+                answer = response.choices[0].message.content or ""
+                answer = answer.strip()
+                if answer:
+                    return answer
+            except Exception as e:
+                last_err = e
+                # Wait briefly on rate limit / transient errors
+                time.sleep(4 * (attempt + 1))
+                continue
+
+        # Fallback to responses.create if standard chat.completions isn't available
+        try:
+            response = self.client.responses.create(
+                model=self.model,
+                input=prompt,
+                temperature=0,
+                max_output_tokens=self.max_output_tokens,
+            )
+            answer = response.output_text.strip()
+            if answer:
+                return answer
+        except Exception:
+            pass
+
+        raise RuntimeError(f"Model generation failed: {last_err}")
 
 
 @dataclass(frozen=True)
